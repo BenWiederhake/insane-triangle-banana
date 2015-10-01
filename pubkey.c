@@ -23,18 +23,9 @@
 #include <stdio.h>
 #include <string.h> /* memcmp */
 
-#include <nss/nss.h>
-#include <../nss.h> // outer
-#include <nss/pk11pub.h>
-#include <nss/base64.h>
-#include <nss/keyhi.h>
-#include <nss/keythi.h>
-#include <nspr/prerror.h>
-#include <nspr/plarenas.h>
-
-#include <secerr.h>
-#include <secasn1.h> /* for SEC_ASN1GetSubtemplate */
-#include <secitem.h>
+#define LTC_MRSA
+#include <tomcrypt.h>
+#include <tomcrypt_pk.h>
 
 #include "pubkey.h"
 
@@ -161,94 +152,16 @@ pubkey_error_code pubkey_from_guarded (char *const data, const size_t length, pu
   return pubkey_from_base64 (data, dst);
 }
 
-/* What the hell?
- * https://mxr.mozilla.org/security/source/security/nss/lib/cryptohi/seckey.c#1346 */
-SECKEYPublicKey *my_SECKEY_DecodeDERPublicKey (SECItem *pubkder) {
-  PRArenaPool *arena;
-  SECKEYPublicKey *pubk;
-  SECStatus rv;
-  SECItem newPubkder;
-
-  arena = PORT_NewArena (DER_DEFAULT_CHUNKSIZE);
-  if (arena == NULL) {
-    return NULL;
-  }
-
-  pubk = (SECKEYPublicKey *) PORT_ArenaZAlloc (arena, sizeof (SECKEYPublicKey));
-  if (pubk != NULL) {
-    pubk->arena = arena;
-    pubk->pkcs11Slot = NULL;
-    pubk->pkcs11ID = 0;
-    pubk->u.rsa.modulus.type = siUnsignedInteger;
-    pubk->u.rsa.publicExponent.type = siUnsignedInteger;
-    /* copy the DER into the arena, since Quick DER returns data that points
-    into the DER input, which may get freed by the caller */
-    rv = SECITEM_CopyItem(arena, &newPubkder, pubkder);
-    if ( rv == SECSuccess ) {
-      rv = SEC_QuickDERDecodeItem(arena, pubk, SECKEY_RSAPublicKeyTemplate,&newPubkder);
-    }
-
-    if (rv == SECSuccess)
-      return pubk;
-    //SECKEY_DestroyPublicKey (pubk);
-  }
-
-  PORT_FreeArena (arena, PR_FALSE);
-  return NULL;
-}
-
 pubkey_error_code pubkey_from_base64 (const char *pubkstr, pubkey_data **dst) {
-  /* This is the ugly part. Inspired by https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS/nss_sample_code/NSS_Sample_Code_sample5 */
+  // FIXME: Decode base64, then:
 
-  if (!NSS_IsInitialized ()) {
-    if (SECSuccess != NSS_NoDB_Init (".")) {
-      return pubkey_ec_nss_internal;
-    }
-  }
+  // FIXME: Init libtomcrypt; currently fails LTC_ARGCHK(ltc_mp.name != NULL);
 
-  PK11SlotInfo *slot = PK11_GetInternalKeySlot ();
-  if (slot == NULL) {
-    return pubkey_ec_nss_internal;
-  }
+  rsa_key key;
+  int res = rsa_import(buf, actual_size, &key);
+  assert (res);
 
-  SECItem der;
-  der.data = NULL;
-  der.len = 0;
-  der.type = 0;
-  if (SECSuccess != ATOB_ConvertAsciiToItem (&der, pubkstr)) {
-    PK11_FreeSlot(slot);
-    return pubkey_ec_nss_internal;
-  }
-
-  SECKEYPublicKey *pubkey = my_SECKEY_DecodeDERPublicKey (&der);
-  pubkey_error_code ec = pubkey_ec_ok;
-  if (!pubkey) {
-    ec = pubkey_ec_nss_internal;
-  }
-  SECITEM_FreeItem (&der, 0);
-//  if (!ec && rsaKey != pubkey->keyType) {
-//    ec = pubkey_ec_nss_internal;
-//  }
-  if (!ec && (siUnsignedInteger != pubkey->u.rsa.modulus.type)) {
-    ec = pubkey_ec_nss_internal;
-  }
-  if (!ec && (siUnsignedInteger != pubkey->u.rsa.publicExponent.type)) {
-    ec = pubkey_ec_nss_internal;
-  }
-  if (!ec && (PUBKEY_USE_MAX_MOD_LEN < pubkey->u.rsa.modulus.len)) {
-    ec = pubkey_ec_too_large;
-  }
-  if (!ec && (4 < pubkey->u.rsa.publicExponent.len)) {
-    ec = pubkey_ec_too_large;
-  }
-
-  *dst = NULL;
-  if (!ec) {
-    *dst = malloc (sizeof (pubkey_data));
-    if (!*dst) {
-      ec = pubkey_ec_nss_internal; // Lie.
-    }
-  }
+  // Code verbatim from nss solution:
 
   if (!ec) {
     assert(*dst);
